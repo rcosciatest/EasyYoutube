@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import Teleprompter from './Teleprompter';
 import { downloadVideo as downloadVideoUtil } from '../utils/download_utils';
+import { initializeVideoRecorder } from './video-recorder/utils/initialize';
 
 interface VideoRecorderProps {
   script: string;
@@ -78,6 +79,7 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ script }) => {
   const animFrameRef = useRef<number | null>(null);
   const circleWebcamRef = useRef<HTMLVideoElement>(null);
   const timerRef = useRef<number | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   
   // Get supported MIME type
   const getSupportedMimeType = () => {
@@ -144,87 +146,104 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ script }) => {
   // Start recording function
   const startRecording = async () => {
     try {
+      console.log("Starting recording...");
+      
       // Reset state
       chunksRef.current = [];
       setRecordedChunks([]);
       setError(null);
       setRecordingDuration(0);
+      setVideoUrl(null);
+      setVideoBlob(null);
       
-      // Get fresh composite stream
+      // Ensure streams are connected
+      await ensureVideoStreamsAvailable();
+      
+      // Wait for streams to stabilize
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Create fresh recording stream
       const finalStream = getFinalStream();
-      if (!finalStream) {
-        throw new Error('Failed to get recording stream');
-      }
-      
-      // Store the canvas stream for later cleanup
       setCanvasStream(finalStream);
       
-      // Get optimal MIME type
+      // Get supported format
       const mimeType = getSupportedMimeType();
-      console.log(`Using recording format: ${mimeType} for ${viewMode} view`);
+      console.log(`Using recording format: ${mimeType} for ${viewMode} mode`);
       
-      // Configure recorder with better quality settings
-      const mediaRecorder = new MediaRecorder(finalStream, {
-        mimeType: mimeType,
-        videoBitsPerSecond: 2500000, // Higher bitrate for better quality
-        audioBitsPerSecond: 128000
+      // Create recorder with better settings
+      const recorder = new MediaRecorder(finalStream, {
+        mimeType,
+        videoBitsPerSecond: 2500000, // 2.5 Mbps
       });
       
+      mediaRecorderRef.current = recorder;
+      
       // Handle data chunks
-      mediaRecorder.ondataavailable = (event) => {
+      recorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) {
-          console.log(`Received chunk: ${(event.data.size / 1024).toFixed(2)} KB`);
+          console.log(`Received data chunk: ${(event.data.size / 1024).toFixed(1)}KB`);
           chunksRef.current.push(event.data);
+        } else {
+          console.warn("Empty data chunk received");
         }
       };
       
       // Handle recording completion
-      mediaRecorder.onstop = () => {
-        console.log(`Recording completed with ${chunksRef.current.length} chunks`);
+      recorder.onstop = () => {
+        console.log(`Recording stopped with ${chunksRef.current.length} chunks`);
         
-        // Clean up animation loop
+        // Stop animation frame
         if (animFrameRef.current) {
           cancelAnimationFrame(animFrameRef.current);
           animFrameRef.current = null;
         }
         
-        // Clean up old video URL
+        // Clear old URL
         if (videoUrl) {
           URL.revokeObjectURL(videoUrl);
         }
         
+        // Check for data
         if (chunksRef.current.length === 0) {
-          console.error('No data recorded');
+          console.error("No data recorded");
           setError('No video data was captured. Please try again.');
           setRecordingState('idle');
           return;
         }
         
-        // Create final video blob
-        const blob = new Blob(chunksRef.current, { type: mimeType });
-        console.log(`Video size: ${(blob.size / (1024 * 1024)).toFixed(2)} MB`);
+        try {
+          // Create blob from all chunks
+          const blob = new Blob(chunksRef.current, { type: mimeType });
+          console.log(`Created video blob: ${(blob.size / (1024 * 1024)).toFixed(2)}MB`);
+          
+          // Set state with blob and chunks
+          setVideoBlob(blob);
+          setRecordedChunks([...chunksRef.current] as Blob[]);
+          
+          // Create URL for playback
+          const url = URL.createObjectURL(blob);
+          setVideoUrl(url);
+          console.log(`Video URL created: ${url}`);
+        } catch (e) {
+          console.error('Error creating video blob:', e);
+          setError(`Failed to process recording: ${e}`);
+        }
         
-        setVideoBlob(blob);
-        setRecordedChunks([...chunksRef.current] as Blob[]);
-        
-        // Create URL for playback
-        const url = URL.createObjectURL(blob);
-        setVideoUrl(url);
         setRecordingState('idle');
       };
       
-      // Start recording with small chunks (250ms) to better handle view changes
-      mediaRecorder.start(250);
-      mediaRecorderRef.current = mediaRecorder;
+      // Start with small chunks for responsive view switching
+      recorder.start(100);
       
       // Start timer
       startTimer();
       
-      console.log('Recording started');
+      console.log("Recording started successfully");
       setRecordingState('recording');
     } catch (err) {
       console.error('Error starting recording:', err);
-      setError(`Recording failed: ${err instanceof Error ? err.message : String(err)}`);
+      setError(`Recording failed: ${String(err)}`);
+      setRecordingState('idle');
     }
   };
   
@@ -243,19 +262,33 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ script }) => {
   
   // Stop recording function
   const stopRecording = () => {
+    console.log("Stopping recording...");
+    
     if (mediaRecorderRef.current && recordingState === 'recording') {
-      console.log('Stopping recording...');
-      // Request one final chunk of data
-      mediaRecorderRef.current.requestData();
-      
-      // Small timeout to ensure data is processed
-      setTimeout(() => {
-        mediaRecorderRef.current?.stop();
-        stopTimer();
+      try {
+        // Stop the recorder
+        mediaRecorderRef.current.stop();
+        mediaRecorderRef.current = null;
         
-        // Reset the recorder view
-        setRecordingState('idle');
-      }, 100);
+        // Stop the timer
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+        }
+        
+        // Reset canvas stream if needed
+        if (canvasStream) {
+          canvasStream.getTracks().forEach(track => track.stop());
+          setCanvasStream(null);
+        }
+        
+        console.log("Recording stopped gracefully");
+      } catch (err) {
+        console.error("Error stopping recording:", err);
+        setError(`Failed to stop recording: ${err}`);
+      }
+    } else {
+      console.warn("No active recording to stop");
     }
   };
   
@@ -365,12 +398,12 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ script }) => {
     // Ensure screen stream is connected
     if (screenStream && screenVideoRef.current && screenVideoRef.current.srcObject !== screenStream) {
       screenVideoRef.current.srcObject = screenStream;
-      screenVideoRef.current.play().catch(e => console.error("Error playing screen capture:", e));
+      screenVideoRef.current.play().catch(e => console.error("Error playing restored screen video:", e));
     }
   };
   
   // Update toggleViewMode to call this function
-  const toggleViewMode = (mode: 'full' | 'split') => {
+  const toggleViewMode = async (mode: 'full' | 'split') => {
     console.log(`Toggling view mode: ${viewMode} → ${mode}`);
     
     // Set view mode immediately for UI feedback
@@ -379,27 +412,60 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ script }) => {
     if (mode === 'split') {
       if (!screenStream || !screenStream.active) {
         // Need to start screen capture
-        startScreenCapture().then(stream => {
-          if (!stream) {
-            console.error("Screen capture failed - reverting to full view");
-            setViewMode('full');
-          } else {
-            // Ensure streams are properly connected
-            setTimeout(ensureVideoStreams, 100);
-          }
-        });
-      } else {
-        // Already have screen stream, just ensure connections
-        setTimeout(ensureVideoStreams, 100);
+        const stream = await startScreenCapture();
+        if (!stream) {
+          console.error("Screen capture failed - reverting to full view");
+          setViewMode('full');
+          return; // Exit early if screen capture fails
+        }
       }
     }
     
-    // Always ensure webcam streams are properly set
-    ensureVideoStreams();
+    // Add a small delay to allow DOM updates before checking streams
+    setTimeout(() => {
+      ensureVideoStreamsAvailable();
+      // Force a redraw of the canvas if we're recording
+      if (recordingState === 'recording' && animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+        animFrameRef.current = requestAnimationFrame(drawToCanvas);
+      }
+    }, 200);
+  };
+  
+  // Add this improved function to ensure video streams are properly connected
+  const ensureVideoStreamsAvailable = () => {
+    const webcamStream = streamRef.current;
+    console.log("Ensuring video streams for mode:", viewMode);
     
-    // If we're recording, log a marker
-    if (recordingState === 'recording') {
-      console.log(`View changed during recording: ${viewMode} → ${mode}`);
+    if (webcamStream) {
+      // For full view, ensure main video has webcam stream
+      if (viewMode === 'full' && videoRef.current) {
+        if (!videoRef.current.srcObject || videoRef.current.srcObject !== webcamStream) {
+          console.log("Restoring main webcam stream");
+          videoRef.current.srcObject = webcamStream;
+          videoRef.current.play().catch(e => console.error("Error playing restored main webcam:", e));
+        }
+      }
+      
+      // For split view, ensure circle/square video has webcam stream
+      if (viewMode === 'split' && circleWebcamRef.current) {
+        if (!circleWebcamRef.current.srcObject || circleWebcamRef.current.srcObject !== webcamStream) {
+          console.log("Restoring circle webcam stream");
+          circleWebcamRef.current.srcObject = webcamStream;
+          circleWebcamRef.current.play().catch(e => console.error("Error playing restored circle webcam:", e));
+        }
+      }
+    } else {
+      console.warn("No webcam stream available");
+    }
+    
+    // For split view, check screen video
+    if (viewMode === 'split' && screenStream && screenVideoRef.current) {
+      if (!screenVideoRef.current.srcObject || screenVideoRef.current.srcObject !== screenStream) {
+        console.log("Restoring screen capture stream");
+        screenVideoRef.current.srcObject = screenStream;
+        screenVideoRef.current.play().catch(e => console.error("Error playing restored screen video:", e));
+      }
     }
   };
   
@@ -426,7 +492,7 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ script }) => {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [screenStream]); // Add screenStream as dependency to avoid requesting it multiple times
+  }, [screenStream, toggleViewMode]);
   
   // Add cleanup for animation frame
   useEffect(() => {
@@ -439,9 +505,12 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ script }) => {
   
   // Add cleanup for video URL
   useEffect(() => {
+    // Store a reference to the current URL
+    const currentVideoUrl = videoUrl;
+    
     return () => {
-      if (videoUrl) {
-        URL.revokeObjectURL(videoUrl);
+      if (currentVideoUrl) {
+        URL.revokeObjectURL(currentVideoUrl);
       }
     };
   }, [videoUrl]);
@@ -502,38 +571,129 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ script }) => {
     });
   }, []);
   
-  const debugMediaRecorderState = () => {
-    if (!mediaRecorderRef.current) {
-      console.log('MediaRecorder not initialized');
+  // Completely rewritten drawToCanvas function
+  const drawToCanvas = () => {
+    // Create canvas only once if it doesn't exist
+    if (!canvasRef.current) {
+      console.log("Creating new canvas for recording");
+      canvasRef.current = document.createElement('canvas');
+      canvasRef.current.width = 1280;  // HD resolution
+      canvasRef.current.height = 720;
+    }
+    
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d', { alpha: false }) as CanvasRenderingContext2DExtended;
+    
+    if (!ctx) {
+      console.error("Could not get canvas context");
       return;
     }
     
-    console.log({
-      state: mediaRecorderRef.current.state,
-      mimeType: mediaRecorderRef.current.mimeType,
-      videoBitsPerSecond: mediaRecorderRef.current.videoBitsPerSecond,
-      audioBitsPerSecond: mediaRecorderRef.current.audioBitsPerSecond,
-      stream: mediaRecorderRef.current.stream.active ? 'active' : 'inactive',
-      chunksCollected: chunksRef.current.length
-    });
+    // Clear canvas completely first
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    try {
+      if (viewMode === 'full') {
+        // Draw the webcam video full screen
+        if (videoRef.current && videoRef.current.readyState >= 2) {
+          ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+        }
+      } else if (viewMode === 'split') {
+        // Draw screen capture background
+        if (screenVideoRef.current && screenVideoRef.current.readyState >= 2) {
+          ctx.drawImage(screenVideoRef.current, 0, 0, canvas.width, canvas.height);
+        }
+        
+        // Draw webcam overlay
+        if (circleWebcamRef.current && circleWebcamRef.current.readyState >= 2) {
+          const size = Math.min(canvas.width, canvas.height) * 0.25;
+          const x = canvas.width - size - 20;
+          const y = canvas.height - size - 20;
+          
+          // Draw webcam with rounded corners
+          ctx.save();
+          ctx.beginPath();
+          if (ctx.roundRect) {
+            ctx.roundRect(x, y, size, size, 8);
+          } else {
+            ctx.rect(x, y, size, size);
+          }
+          ctx.clip();
+          ctx.drawImage(circleWebcamRef.current, x, y, size, size);
+          ctx.restore();
+          
+          // Add border
+          ctx.strokeStyle = "#ffffff";
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          if (ctx.roundRect) {
+            ctx.roundRect(x, y, size, size, 8);
+          } else {
+            ctx.rect(x, y, size, size);
+          }
+          ctx.stroke();
+        }
+      }
+      
+      // Add recording indicator and time
+      if (recordingState === 'recording') {
+        // Red recording dot
+        ctx.fillStyle = "#ff0000";
+        ctx.beginPath();
+        ctx.arc(20, 20, 8, 0, 2 * Math.PI);
+        ctx.fill();
+        
+        // Recording time
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "16px Arial";
+        ctx.fillText(formatTime(recordingDuration), 40, 25);
+        
+        // View mode indicator (for debugging)
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "12px Arial";
+        ctx.fillText(`Mode: ${viewMode}`, canvas.width - 100, 20);
+      }
+    } catch (err) {
+      console.error("Error drawing to canvas:", err);
+    }
+    
+    // Request next frame
+    animFrameRef.current = requestAnimationFrame(drawToCanvas);
   };
-  
-  // Add this function before startRecording()
-  const getFinalStream = (): MediaStream | null => {
-    console.log('Getting final stream, view mode:', viewMode);
+
+  // Now update getFinalStream to use the shared drawToCanvas function
+  const getFinalStream = (): MediaStream => {
+    // Make sure canvas exists
+    if (!canvasRef.current) {
+      console.log("Creating canvas in getFinalStream");
+      canvasRef.current = document.createElement('canvas');
+      canvasRef.current.width = 1280;
+      canvasRef.current.height = 720;
+    }
     
-    // Create a composite stream that will reflect UI changes during recording
-    const compositeStream = createCompositeStream();
+    // Stop any existing animation
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+    }
     
-    // Add audio from the webcam stream
+    // Start drawing to canvas
+    drawToCanvas();
+    
+    // Create stream with consistent framerate
+    const stream = canvasRef.current.captureStream(30);
+    console.log(`Created stream with ${stream.getTracks().length} tracks`);
+    
+    // Add audio track if available from webcam
     if (streamRef.current) {
       const audioTracks = streamRef.current.getAudioTracks();
       if (audioTracks.length > 0) {
-        compositeStream.addTrack(audioTracks[0]);
+        stream.addTrack(audioTracks[0]);
+        console.log("Added audio track to recording stream");
       }
     }
     
-    return compositeStream;
+    return stream;
   };
   
   // Add this helper function
@@ -543,16 +703,24 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ script }) => {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
   
-  // Add these timer functions
+  // Fixed timer implementation
   const startTimer = () => {
-    // Reset the timer
+    // Clear existing timer
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+    }
+    
+    // Reset duration
     setRecordingDuration(0);
     
-    // Start the timer interval
+    // Record start time
     const startTime = Date.now();
+    
+    // Update every second
     timerRef.current = window.setInterval(() => {
-      const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      setRecordingDuration(elapsed);
+      const elapsed = Date.now() - startTime;
+      setRecordingDuration(Math.floor(elapsed / 1000));
+      console.log(`Recording time: ${Math.floor(elapsed / 1000)}s`);
     }, 1000);
   };
 
@@ -573,82 +741,10 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ script }) => {
     };
   }, []);
   
-  // Update the canvas stream capture to use a lower framerate for more consistent results
-  const createCompositeStream = (): MediaStream => {
-    // Create a canvas element at the right size
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    
-    // Set initial canvas dimensions to HD quality
-    canvas.width = 1280;
-    canvas.height = 720;
-    
-    // Keep track of current view mode for debugging
-    let currentViewMode = viewMode;
-    
-    // Function to draw the current view to canvas
-    const drawToCanvas = () => {
-      if (!ctx) return;
-      
-      // Log if view mode changed
-      if (currentViewMode !== viewMode) {
-        console.log(`Canvas detected view change: ${currentViewMode} → ${viewMode}`);
-        currentViewMode = viewMode;
-      }
-      
-      // Clear canvas
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      
-      try {
-        if (viewMode === 'full') {
-          // Draw the webcam video full screen
-          if (videoRef.current && videoRef.current.readyState >= 2) {
-            ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-          } else {
-            // Black background as fallback
-            ctx.fillStyle = "#000000";
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-          }
-        } else if (viewMode === 'split') {
-          // Draw screen capture background
-          if (screenVideoRef.current && screenVideoRef.current.readyState >= 2) {
-            ctx.drawImage(screenVideoRef.current, 0, 0, canvas.width, canvas.height);
-          } else {
-            // Light gray background as fallback
-            ctx.fillStyle = "#f0f0f0";
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-          }
-          
-          // Draw webcam overlay
-          if (circleWebcamRef.current && circleWebcamRef.current.readyState >= 2) {
-            const size = Math.min(canvas.width, canvas.height) * 0.25;
-            const x = canvas.width - size - 20;
-            const y = canvas.height - size - 20;
-            
-            // Draw webcam with rounded corners
-            ctx.save();
-            ctx.beginPath();
-            ctx.roundRect(x, y, size, size, 8);
-            ctx.clip();
-            ctx.drawImage(circleWebcamRef.current, x, y, size, size);
-            ctx.restore();
-          }
-
-        }
-      } catch (err) {
-        console.error("Error drawing to canvas:", err);
-      }
-      
-      // Continue the loop - using 20fps for more reliable encoding
-      animFrameRef.current = requestAnimationFrame(drawToCanvas);
-    };
-    
-    // Start the draw loop
-    drawToCanvas();
-    
-    // Use a slightly lower framerate (20fps) for more consistent results
-    return canvas.captureStream(20);
-  };
+  // Call initialization function before anything else
+  useEffect(() => {
+    initializeVideoRecorder();
+  }, []);
   
   // Render
   return (
@@ -1065,6 +1161,11 @@ const VideoPlayer: React.FC<{ videoUrl: string | null }> = ({ videoUrl }) => {
     
     setErrorDetails(errorMsg);
     setPlayerState('error');
+  };
+  
+  const onError = (message: string) => {
+    console.error(`Media player error: ${message}`);
+    setErrorDetails(message);
   };
   
   return (
