@@ -2,6 +2,12 @@ import React from 'react';
 import ScriptForm from './components/ScriptForm';
 
 function App() {
+  const handleNavigation = (page: string) => {
+    console.log(`Navigating to ${page}`);
+    // Implement your navigation logic here
+    // For example, you could use React Router or state to change the current page
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-50 to-gray-100">
       <header className="bg-white shadow-sm">
@@ -15,13 +21,43 @@ function App() {
           </div>
           <nav>
             <ul className="flex space-x-6">
-              <li><a href="#" className="text-gray-600 hover:text-gray-900 font-medium">Home</a></li>
-              <li><a href="#" className="text-gray-600 hover:text-gray-900 font-medium">About</a></li>
-              <li><a href="#" className="text-gray-600 hover:text-gray-900 font-medium">Contact</a></li>
+              <li><button 
+                className="text-indigo-600 hover:text-indigo-800"
+                onClick={() => handleNavigation('home')}
+              >
+                Home
+              </button></li>
+              <li><button 
+                className="text-indigo-600 hover:text-indigo-800"
+                onClick={() => handleNavigation('about')}
+              >
+                About
+              </button></li>
+              <li><button 
+                className="text-indigo-600 hover:text-indigo-800"
+                onClick={() => handleNavigation('contact')}
+              >
+                Contact
+              </button></li>
             </ul>
           </nav>
         </div>
       </header>
+      
+      <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 mx-auto max-w-4xl mt-4">
+        <div className="flex">
+          <div className="flex-shrink-0">
+            <svg className="h-5 w-5 text-yellow-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+            </svg>
+          </div>
+          <div className="ml-3">
+            <p className="text-sm text-yellow-700">
+              This app requires camera and microphone permissions for the video recording feature. Your recordings are stored locally and not uploaded to any server.
+            </p>
+          </div>
+        </div>
+      </div>
       
       <main className="container mx-auto px-4 py-12">
         <div className="max-w-4xl mx-auto">

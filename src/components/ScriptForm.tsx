@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import rehypeRaw from 'rehype-raw';
+import VideoRecorder from './VideoRecorder';
 
 // Expanded interface for form data
 interface ScriptFormData {
@@ -547,6 +548,9 @@ const ScriptForm: React.FC = () => {
               )}
             </div>
           </div>
+          
+          {/* Video Recorder Section */}
+          <VideoRecorder script={editableScript} />
         </div>
       )}
     </div>
