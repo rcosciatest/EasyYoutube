@@ -39,14 +39,27 @@ export const useMediaStreams = (initialViewMode: ViewMode): UseMediaStreamsResul
         webcamStream.getTracks().forEach(track => track.stop());
       }
       
-      // Request with both audio and video
+      // First check if permissions are already granted
+      const permissionStatus = await navigator.permissions.query({ name: 'camera' as PermissionName });
+      
+      if (permissionStatus.state === 'denied') {
+        console.error("Camera permission denied by browser");
+        throw new Error("Camera permission denied. Please allow camera access in your browser settings.");
+      }
+      
+      // Request with both audio and video with more detailed constraints
       const stream = await navigator.mediaDevices.getUserMedia({ 
         video: {
           width: { ideal: 1280 },
           height: { ideal: 720 },
           frameRate: { ideal: 30 }
         },
-        audio: true 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 48000
+        }
       });
       
       console.log(`Webcam initialized with ${stream.getTracks().length} tracks:`);
@@ -54,7 +67,16 @@ export const useMediaStreams = (initialViewMode: ViewMode): UseMediaStreamsResul
         console.log(`- ${track.kind}: ${track.label} (${track.enabled ? 'enabled' : 'disabled'})`);
       });
       
+      // Verify we have both video and audio tracks
+      if (stream.getVideoTracks().length === 0) {
+        throw new Error("No video tracks available from camera");
+      }
+      
+      // Even if no audio tracks, continue with video - we'll handle audio separately
       setWebcamStream(stream);
+      
+      // Store it globally for easy access
+      window._webcamStream = stream;
       
       // Immediately attach to video elements
       const attachToVideoElements = () => {
@@ -71,6 +93,7 @@ export const useMediaStreams = (initialViewMode: ViewMode): UseMediaStreamsResul
         }
       };
       
+      // Try to connect immediately
       attachToVideoElements();
       
       // Also try after a short delay to ensure elements are ready
@@ -79,6 +102,50 @@ export const useMediaStreams = (initialViewMode: ViewMode): UseMediaStreamsResul
       return stream;
     } catch (err) {
       console.error("Failed to initialize webcam:", err);
+      // Show user-friendly error message
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      const userError = errorMessage.includes("Permission denied") || 
+                        errorMessage.includes("Permission dismissed") ||
+                        errorMessage.includes("NotAllowedError") ?
+        "Could not access camera and microphone. Please ensure you have given permission." :
+        `Failed to initialize webcam: ${errorMessage}`;
+        
+      // Add a button to retry
+      const errorDiv = document.createElement('div');
+      errorDiv.className = 'bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative';
+      errorDiv.innerHTML = `
+        <p>${userError}</p>
+        <button class="mt-2 bg-blue-500 hover:bg-blue-700 text-white font-bold py-1 px-2 rounded">
+          Retry Camera Access
+        </button>
+        <button class="mt-2 ml-2 text-red-700 font-bold py-1 px-2 rounded dismiss-btn">
+          Dismiss
+        </button>
+      `;
+      
+      // Add to the top of the video recorder container
+      const container = document.querySelector('.video-recorder-container');
+      if (container && !document.querySelector('.bg-red-100')) {
+        container.prepend(errorDiv);
+        
+        // Add retry handler
+        const retryBtn = errorDiv.querySelector('button');
+        if (retryBtn) {
+          retryBtn.addEventListener('click', async () => {
+            errorDiv.remove();
+            await initializeWebcam();
+          });
+        }
+        
+        // Add dismiss handler
+        const dismissBtn = errorDiv.querySelector('.dismiss-btn');
+        if (dismissBtn) {
+          dismissBtn.addEventListener('click', () => {
+            errorDiv.remove();
+          });
+        }
+      }
+      
       return null;
     } finally {
       setIsInitializing(false);

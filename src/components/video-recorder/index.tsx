@@ -11,6 +11,8 @@ import { castRef } from './utils/type-helpers';
 import { cleanupAudioResources } from './utils/recorder-factory';
 import DiagnosticOverlay from './components/DiagnosticOverlay';
 import { audioMonitor } from './utils/audio-monitor';
+// Import window-fix to ensure type augmentations are applied
+import './types/window-fix';
 
 const VideoRecorder: React.FC<VideoRecorderProps> = ({ script }) => {
   // State
@@ -63,31 +65,59 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ script }) => {
   const downloadVideo = useCallback(() => {
     if (!videoBlob) {
       console.error("No video blob available for download");
+      setError("No video data available to download. Please record a video first.");
       return;
     }
     
-    // Create a filename with timestamp
-    const filename = `recording-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.webm`;
-    
-    // Create a download link
-    const a = document.createElement('a');
-    const url = videoUrl || URL.createObjectURL(videoBlob);
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    
-    // If we created a new URL, revoke it
-    if (!videoUrl) {
-      URL.revokeObjectURL(url);
+    try {
+      console.log("Preparing video for download:", {
+        size: `${(videoBlob.size / (1024 * 1024)).toFixed(2)} MB`,
+        type: videoBlob.type
+      });
+      
+      // Create a filename with timestamp
+      const filename = `recording-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.webm`;
+      
+      // Fix MIME type issues by explicitly creating a new Blob with the correct type
+      const correctedBlob = new Blob([videoBlob], { 
+        type: 'video/webm;codecs=vp8,opus' 
+      });
+      
+      // For older browsers, use msSaveBlob if available
+      if (window.navigator && window.navigator.msSaveOrOpenBlob) {
+        window.navigator.msSaveOrOpenBlob(correctedBlob, filename);
+        console.log(`Downloading video using msSaveOrOpenBlob as ${filename}`);
+        return;
+      }
+      
+      // Create a download link
+      const a = document.createElement('a');
+      
+      // Create object URL from fixed blob
+      const url = URL.createObjectURL(correctedBlob);
+      a.href = url;
+      a.download = filename;
+      
+      // Add to DOM, click, and remove
+      document.body.appendChild(a);
+      a.click();
+      
+      // Cleanup: Remove link and revoke URL after download
+      setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        console.log(`Download link cleaned up for ${filename}`);
+      }, 100);
+      
+      console.log(`Downloading video as ${filename}`);
+      
+      // Hide green button after download
+      setShowGreenDownloadButton(false);
+    } catch (err) {
+      console.error("Error downloading video:", err);
+      setError(`Failed to download video: ${err instanceof Error ? err.message : String(err)}`);
     }
-    
-    console.log(`Downloading video as ${filename}`);
-    
-    // Hide green button after download
-    setShowGreenDownloadButton(false);
-  }, [videoBlob, videoUrl]);
+  }, [videoBlob, setError]);
   
   // Combine errors
   useEffect(() => {

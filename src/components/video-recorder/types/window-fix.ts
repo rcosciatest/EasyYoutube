@@ -9,6 +9,12 @@ declare global {
     _lastViewMode: string | undefined;
     _audioTracksAdded: number | undefined;
     _pendingAudioPromise: Promise<MediaStream | null> | null | undefined;
+    _webcamStream?: MediaStream;
+  }
+  
+  // Add Navigator interface extension inside the global scope
+  interface Navigator {
+    msSaveOrOpenBlob?: (blob: Blob, defaultName?: string) => boolean;
   }
 }
 
@@ -63,4 +69,6 @@ export const initWindowGlobals = (): void => {
 };
 
 // Initialize on import
-initWindowGlobals(); 
+initWindowGlobals();
+
+export {}; 
